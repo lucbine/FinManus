@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.agent.manus import SYSTEM_TOOLS
 from app.tool.base import BaseTool
 
+# 工具路由
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 

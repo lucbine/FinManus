@@ -30,6 +30,10 @@ class ReActAgentEvents(BaseAgentEvents):
 
 
 class ReActAgent(BaseAgent, ABC):
+    """
+    实现了经典的ReAct（Reasoning and Acting）模式，将智能体的执行过程分为思考（think）和行动（act）两个阶段，这是现代智能体的核心范式。
+    """
+
     name: str
     description: Optional[str] = None
 
@@ -46,9 +50,11 @@ class ReActAgent(BaseAgent, ABC):
     pre_step_input_tokens: int = 0
     pre_step_completion_tokens: int = 0
 
+    # 思考
     async def think(self) -> bool:
         """Process current state and decide next action"""
 
+    # 行动
     async def act(self) -> str:
         """Execute decided actions"""
 
@@ -57,6 +63,8 @@ class ReActAgent(BaseAgent, ABC):
         ReActAgentEvents.STEP_COMPLETE,
         ReActAgentEvents.STEP_ERROR,
     )
+
+    # 执行单个步骤：思考和行动
     async def step(self) -> str:
         """Execute a single step: think and act."""
         self.emit(ReActAgentEvents.THINK_START, {})

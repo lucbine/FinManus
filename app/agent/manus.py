@@ -22,19 +22,20 @@ from app.tool.str_replace_editor import StrReplaceEditor
 from app.tool.web_search import WebSearch
 
 SYSTEM_TOOLS: list[BaseTool] = [
-    Bash(),
-    WebSearch(),
-    DeepResearch(),
-    BrowserUseTool(),
-    FileOperator(),
-    StrReplaceEditor(),
-    PlanningTool(),
-    CreateChatCompletion(),
+    Bash(),  # 执行命令
+    WebSearch(),  # 网络搜索
+    DeepResearch(),  # 深度研究
+    BrowserUseTool(),  # 浏览器使用
+    FileOperator(),  # 文件操作
+    StrReplaceEditor(),  # 字符串替换
+    PlanningTool(),  # 计划
+    CreateChatCompletion(),  # 创建聊天完成
 ]
 
 SYSTEM_TOOLS_MAP = {tool.name: tool.__class__ for tool in SYSTEM_TOOLS}
 
 
+# 工具配置
 class McpToolConfig(BaseModel):
     id: str
     name: str
@@ -47,6 +48,7 @@ class McpToolConfig(BaseModel):
     headers: dict[str, Any]
 
 
+# 主类 通用代理 继承 ReActAgent 实现了经典的ReAct（Reasoning and Acting）模式，将智能体的执行过程分为思考（think）和行动（act）两个阶段，这是现代智能体的核心范式。
 class Manus(ReActAgent):
     """A versatile general-purpose agent."""
 
@@ -55,33 +57,44 @@ class Manus(ReActAgent):
         "A versatile agent that can solve various tasks using multiple tools"
     )
 
+    # 系统提示词
     system_prompt: str = SYSTEM_PROMPT.format(
         task_id="Not Specified",
         language="English",
         max_steps=20,
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
+
+    # 下一步提示词
     next_step_prompt: str = NEXT_STEP_PROMPT.format(
         max_steps=20,
         current_step=0,
         remaining_steps=20,
         task_dir="Not Specified",
     )
+
+    # 计划提示词
     plan_prompt: str = PLAN_PROMPT.format(
         max_steps=20,
         language="English",
         available_tools="",
     )
 
+    # 最大步骤
     max_steps: int = 20
+    # 任务请求
     task_request: str = ""
 
+    # 工具调用上下文助手
     tool_call_context_helper: Optional[ToolCallContextHelper] = None
+    # 浏览器上下文助手
     browser_context_helper: Optional[BrowserContextHelper] = None
-
+    # 任务目录
     task_dir: str = ""
+    # 语言
     language: Optional[str] = Field(None, description="Language for the agent")
 
+    # 初始化
     def initialize(
         self,
         task_id: str,
@@ -104,14 +117,18 @@ class Manus(ReActAgent):
 
         return self
 
+    # 是 Pydantic v2 中的一个装饰器，用于对模型（Model）进行校验。它是 Pydantic 的新校验机制的一部分，用来定义在模型初始化之后运行的校验逻辑
     @model_validator(mode="after")
     def initialize_helper(self) -> "Manus":
         return self
 
+    # 准备
     async def prepare(self) -> None:
         """Prepare the agent for execution."""
         await super().prepare()
         task_id_without_orgnization_id = self.task_id.split("/")[-1]
+
+        # 系统提示词
         self.system_prompt = SYSTEM_PROMPT.format(
             task_id=task_id_without_orgnization_id,
             language=self.language or "English",
@@ -119,18 +136,23 @@ class Manus(ReActAgent):
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
         )
 
+        # 下一步提示词
         self.next_step_prompt = NEXT_STEP_PROMPT.format(
             max_steps=self.max_steps,
             current_step=self.current_step,
             remaining_steps=self.max_steps - self.current_step,
         )
 
+        # 更新记忆
         await self.update_memory(
             role="system", content=self.system_prompt, base64_image=None
         )
 
+        # 浏览器上下文助手
         self.browser_context_helper = BrowserContextHelper(self)
+        # 工具调用上下文助手
         self.tool_call_context_helper = ToolCallContextHelper(self)
+        # 工具调用上下文助手 可用工具
         self.tool_call_context_helper.available_tools = ToolCollection(Terminate())
 
         if self.tools:
@@ -154,11 +176,13 @@ class Manus(ReActAgent):
                         }
                     )
 
+    # 计划
     async def plan(self) -> str:
         """Create an initial plan based on the user request."""
         # Create planning message
         self.emit(BaseAgentEvents.LIFECYCLE_PLAN_START, {})
 
+        # 计划提示词
         self.plan_prompt = PLAN_PROMPT.format(
             language=self.language or "English",
             max_steps=self.max_steps,
@@ -169,6 +193,10 @@ class Manus(ReActAgent):
                 ]
             ),
         )
+
+        print("--------------------------------plan_prompt:", self.plan_prompt)
+        print("--------------------------------task_request:", self.task_request)
+
         planning_message = await self.llm.ask(
             [
                 Message.system_message(self.plan_prompt),
@@ -182,6 +210,7 @@ class Manus(ReActAgent):
         self.emit(BaseAgentEvents.LIFECYCLE_PLAN_COMPLETE, {"plan": planning_message})
         return planning_message
 
+    # 思考
     async def think(self) -> bool:
         """Process current state and decide next actions with appropriate context."""
         # Update next_step_prompt with current step information
@@ -206,11 +235,13 @@ class Manus(ReActAgent):
 
         return result
 
+    # 行动
     async def act(self) -> str:
         """Execute decided actions"""
         results = await self.tool_call_context_helper.execute_tool()
         return "\n\n".join(results)
 
+    # 检查浏览器是否最近使用过
     def _check_browser_in_use_recently(self) -> bool:
         """Check if the browser is in use by looking at the last 3 messages."""
         recent_messages = self.memory.messages[-3:] if self.memory.messages else []
@@ -222,12 +253,19 @@ class Manus(ReActAgent):
         )
         return browser_in_use
 
+    # 清理
     async def cleanup(self):
         """Clean up Manus agent resources."""
         logger.info(f"🧹 Cleaning up resources for agent '{self.name}'...")
+
+        # 清理浏览器
         if self.browser_context_helper:
             await self.browser_context_helper.cleanup_browser()
+
+        # 清理工具
         if self.tool_call_context_helper:
             await self.tool_call_context_helper.cleanup_tools()
+
+        # 清理父类
         await super().cleanup()
         logger.info(f"✨ Cleanup complete for agent '{self.name}'.")

@@ -4,8 +4,10 @@ from json import dumps
 from pathlib import Path
 from typing import List, Optional, Union, cast
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
+import nanoid
+from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.agent.base import BaseAgentEvents
 from app.agent.manus import Manus, McpToolConfig
@@ -14,11 +16,13 @@ from app.config import LLMSettings, config
 from app.llm import LLM
 from app.logger import logger
 
+# 任务路由
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 AGENT_NAME = "Manus"
 
 
+# 处理任务事件
 async def handle_agent_event(task_id: str, event_name: str, step: int, **kwargs):
     """Handle agent events and update task status.
 
@@ -36,6 +40,7 @@ async def handle_agent_event(task_id: str, event_name: str, step: int, **kwargs)
     )
 
 
+# 运行任务
 async def run_task(task_id: str, prompt: str):
     """Run the task and set up corresponding event handlers.
 
@@ -48,9 +53,11 @@ async def run_task(task_id: str, prompt: str):
         task = task_manager.tasks[task_id]
         agent = task.agent
 
-        # Set up event handlers based on all event types defined in the Agent class hierarchy
+        # 设置事件处理程序，基于所有定义在 Agent 类层次结构中的事件类型
         event_patterns = [r"agent:.*"]
-        # Register handlers for each event pattern
+
+        # 注册每个事件模式的事件处理程序
+        # lambda 关键字在 Python 中用于创建匿名函数 lambda 参数1, 参数2, ... : 表达式
         for pattern in event_patterns:
             agent.on(
                 pattern,
@@ -62,48 +69,16 @@ async def run_task(task_id: str, prompt: str):
                 ),
             )
 
-        # Run the agent
+        # 运行任务
         await agent.run(prompt)
+
+        # 清理任务
         await agent.cleanup()
     except Exception as e:
-        logger.error(f"Error in task {task_id}: {str(e)}")
+        logger.exception(f"Error in task {task_id}: {str(e)}")
 
 
-async def event_generator(task_id: str):
-    if task_id not in task_manager.queues:
-        yield f"event: error\ndata: {dumps({'message': 'Task not found'})}\n\n"
-        return
-
-    queue = task_manager.queues[task_id]
-
-    while True:
-        try:
-            event = await asyncio.wait_for(queue.get(), timeout=10)
-            formatted_event = dumps(event)
-
-            if not event.get("type"):
-                yield ":heartbeat\n\n"
-                continue
-
-            # Send actual event data
-            yield f"data: {formatted_event}\n\n"
-
-            if event.get("event_name") == BaseAgentEvents.LIFECYCLE_COMPLETE:
-                break
-        except asyncio.TimeoutError:
-            yield ":heartbeat\n\n"
-            continue
-        except asyncio.CancelledError:
-            logger.info(f"Client disconnected for task {task_id}")
-            break
-        except Exception as e:
-            logger.error(f"Error in event stream: {str(e)}")
-            yield f"event: error\ndata: {dumps({'message': str(e)})}\n\n"
-            break
-    # Remove the task from the task manager
-    await task_manager.remove_task(task_id)
-
-
+# 解析工具
 def parse_tools(tools: list[str]) -> list[Union[str, McpToolConfig]]:
     """Parse tools list which may contain both tool names and MCP configurations.
 
@@ -135,41 +110,86 @@ def parse_tools(tools: list[str]) -> list[Union[str, McpToolConfig]]:
     return processed_tools
 
 
-@router.post("")
-async def create_task(
-    task_id: str = Form(...),
-    prompt: str = Form(...),
-    should_plan: Optional[bool] = Form(False),
-    tools: Optional[list[str]] = Form(None),
-    preferences: Optional[str] = Form(None),
-    llm_config: Optional[str] = Form(None),
-    files: Optional[List[UploadFile]] = File(None),
-):
-    print(
+# 请求体结构定义
+class TaskRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="任务提示词，必填")
+    task_id: Optional[str] = Field(
+        None, min_length=1, description="任务ID，格式为 organization_id/task_id"
+    )
+    should_plan: bool = Field(False, description="是否启用规划 默认false")
+    tools: Optional[List[str]] = Field(None, description="工具列表")
+    preferences: Optional[dict] = Field(None, description="偏好设置")
+    llm_config: Optional[dict] = Field(None, description="LLM配置")
+    files: Optional[List[UploadFile]] = Field(None, description="文件列表")
+
+
+# 创建任务
+@router.post("/create")
+async def create_task(taskRequest: TaskRequest):
+    """
+    创建任务，创建任务时，会创建一个任务实例，并返回任务ID
+    task_id: 任务ID，如果不传则自动生成
+    prompt: 任务提示，不能为空
+    should_plan: 是否启用计划
+    tools: 工具列表
+    preferences: 偏好设置
+    llm_config: LLM配置
+    """
+
+    prompt = taskRequest.prompt
+    task_id = taskRequest.task_id
+    should_plan = taskRequest.should_plan
+    tools = taskRequest.tools
+    preferences = taskRequest.preferences
+    llm_config = taskRequest.llm_config
+    files = taskRequest.files
+
+    # 验证 prompt 不能为空
+    if not prompt or not prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt cannot be empty")
+
+    # 如果没有提供 task_id，则自动生成一个
+    if not task_id:
+        task_id = (
+            nanoid.generate(size=25) + "/" + nanoid.generate(size=25)
+        )  # 生成一个25位的唯一标识符
+
+    logger.info(
         f"Creating task {task_id} with prompt: {prompt}, should_plan: {should_plan}, tools: {tools}, preferences: {preferences}, llm_config: {llm_config}"
     )
+
     # Parse preferences and llm_config from JSON strings
     preferences_dict = None
     if preferences:
         try:
-            preferences_dict = json.loads(preferences)
+            # 如果已经是字典，直接使用
+            if isinstance(preferences, dict):
+                preferences_dict = preferences
+            else:
+                preferences_dict = json.loads(preferences)
         except json.JSONDecodeError as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid preferences JSON format: {str(e)}",
+                detail=f"Invalid preferences format: {str(e)}",
             )
 
     llm_config_obj = None
     if llm_config:
         try:
-            llm_config_obj = LLMSettings.model_validate_json(llm_config)
+            # 如果已经是字典，直接使用 model_validate
+            if isinstance(llm_config, dict):
+                llm_config_obj = LLMSettings.model_validate(llm_config)
+            else:
+                llm_config_obj = LLMSettings.model_validate_json(llm_config)
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid llm_config format: {str(e)}"
             )
 
+    # 解析工具
     processed_tools = parse_tools(tools or [])
 
+    # 创建任务
     task = task_manager.create_task(
         task_id,
         Manus(
@@ -185,6 +205,7 @@ async def create_task(
         ),
     )
 
+    # 初始化任务
     task.agent.initialize(
         task_id,
         language=(
@@ -205,8 +226,8 @@ async def create_task(
         )
         task_dir.mkdir(parents=True, exist_ok=True)
         for file in files or []:
-            print(task_dir)
-            print(file.filename)
+            # 保存文件
+            logger.info("save file, task_dir: %s, file: %s", task_dir, file.filename)
             file = cast(UploadFile, file)
             try:
                 safe_filename = Path(file.filename).name
@@ -220,6 +241,7 @@ async def create_task(
                 if len(file_content) > MAX_FILE_SIZE:
                     raise HTTPException(status_code=400, detail="File too large")
 
+                # 保存文件
                 with open(file_path, "wb") as f:
                     f.write(file_content)
 
@@ -228,21 +250,37 @@ async def create_task(
                 raise HTTPException(
                     status_code=500, detail=f"Error saving file: {str(e)}"
                 )
+
+        # 更新任务提示，添加文件信息
         prompt = (
             prompt
             + "\n\n"
             + "Here are the files I have uploaded: "
             + "\n\n".join([f"File: {file.filename}" for file in files])
         )
-
+    # 创建任务 并运行任务
+    """
+    asyncio.create_task() 是 Python asyncio 库中的核心函数，用于并发执行协程（coroutines）。它的主要作用是将一个协程包装成 Task 对象并立即调度到事件循环中执行，允许程序在后台运行多个异步操作而不阻塞主线程。
+    """
     asyncio.create_task(run_task(task.id, prompt))
     return {"task_id": task.id}
 
 
-@router.get("/{organization_id}/{task_id}/events")
-async def task_events(organization_id: str, task_id: str):
+class EventRequest(BaseModel):
+    task_id: str = Field(..., description="任务ID，必填")
+    organization_id: str = Field(..., description="组织ID，必填")
+
+
+# 获取任务事件
+# organization_id 用于实现多租户（Multi-tenant）架构、
+# 每个组织（organization）有自己独立的任务空间
+# 确保不同组织之间的数据隔离
+@router.post("/events")
+async def task_events(eventRequest: EventRequest):
+    # StreamingResponse 是 FastAPI 提供的一个响应类，用于流式传输数据。它允许服务器在响应中逐步发送数据，而不是一次性发送所有数据。
+    # 这对于处理大型数据集或需要实时更新的场景非常有用。
     return StreamingResponse(
-        event_generator(f"{organization_id}/{task_id}"),
+        event_generator(f"{eventRequest.organization_id}/{eventRequest.task_id}"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -251,7 +289,49 @@ async def task_events(organization_id: str, task_id: str):
         },
     )
 
+# 事件生成器，用于生成事件流
+async def event_generator(task_id: str):
 
+    # 如果任务不存在，则返回错误
+    if task_id not in task_manager.queues:
+        yield f"event: error\ndata: {dumps({'message': 'Task not found'})}\n\n"
+        return
+
+    queue = task_manager.queues[task_id]
+
+    while True:
+        try:
+            event = await asyncio.wait_for(queue.get(), timeout=10)
+            formatted_event = dumps(event)
+
+            if not event.get("type"):
+                yield ":heartbeat\n\n"
+                continue
+
+            # yield 会把函数变成一个生成器，每次调用时返回一个值并暂停函数执行，等下次继续从上次的位置继续运行。
+            # Send actual event data（发送实际事件数据）
+            yield f"data: {formatted_event}\n\n"
+
+            if event.get("event_name") == BaseAgentEvents.LIFECYCLE_COMPLETE:
+                break
+        except asyncio.TimeoutError:
+            # 心跳
+            yield ":heartbeat\n\n"
+            continue
+        except asyncio.CancelledError:
+            # 客户端断开连接
+            logger.info(f"Client disconnected for task {task_id}")
+            break
+        except Exception as e:
+            # 错误
+            logger.error(f"Error in event stream: {str(e)}")
+            yield f"event: error\ndata: {dumps({'message': str(e)})}\n\n"
+            break
+    # 移除任务
+    await task_manager.remove_task(task_id)
+
+
+# 获取任务列表
 @router.get("")
 async def get_tasks():
     sorted_tasks = sorted(
@@ -263,23 +343,40 @@ async def get_tasks():
     )
 
 
+class RestartTaskRequest(BaseModel):
+    task_id: str = Field(..., min_length=1, description="任务ID，必填")
+    prompt: str = Field(..., min_length=1, description="任务提示词，必填")
+    should_plan: Optional[bool] = Field(None, description="是否启用规划 默认false")
+    tools: Optional[List[str]] = Field(None, description="工具列表")
+    preferences: Optional[dict] = Field(None, description="偏好设置")
+    llm_config: Optional[dict] = Field(None, description="LLM配置")
+    history: Optional[List[dict]] = Field(None, description="历史记录")
+    files: Optional[List[UploadFile]] = Field([], description="文件列表")
+
+
+# 重启任务(有历史记录)
 @router.post("/restart")
 async def restart_task(
-    task_id: str = Form(...),
-    prompt: str = Form(...),
-    should_plan: Optional[bool] = Form(False),
-    tools: Optional[list[str]] = Form(None),
-    preferences: Optional[str] = Form(None),
-    llm_config: Optional[str] = Form(None),
-    history: Optional[str] = Form(None),
-    files: Optional[list[UploadFile]] = File(None),
+    restartTaskRequest: RestartTaskRequest,
 ):
     """Restart a task."""
+    task_id = restartTaskRequest.task_id
+    prompt = restartTaskRequest.prompt
+    should_plan = restartTaskRequest.should_plan
+    tools = restartTaskRequest.tools
+    preferences = restartTaskRequest.preferences
+    llm_config = restartTaskRequest.llm_config
+    history = restartTaskRequest.history
+    files = restartTaskRequest.files
+
     # Parse JSON strings
     preferences_dict = None
     if preferences:
         try:
-            preferences_dict = json.loads(preferences)
+            if isinstance(preferences, dict):
+                preferences_dict = preferences
+            else:
+                preferences_dict = json.loads(preferences)
         except json.JSONDecodeError:
             raise HTTPException(
                 status_code=400, detail="Invalid preferences JSON format"
@@ -288,7 +385,10 @@ async def restart_task(
     llm_config_obj = None
     if llm_config:
         try:
-            llm_config_obj = LLMSettings.model_validate_json(llm_config)
+            if isinstance(llm_config, dict):
+                llm_config_obj = LLMSettings.model_validate(llm_config)
+            else:
+                llm_config_obj = LLMSettings.model_validate_json(llm_config)
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid llm_config format: {str(e)}"
@@ -297,7 +397,10 @@ async def restart_task(
     history_list = None
     if history:
         try:
-            history_list = json.loads(history)
+            if isinstance(history, list):
+                history_list = history
+            else:
+                history_list = json.loads(history)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid history JSON format")
 
@@ -379,13 +482,19 @@ async def restart_task(
     return {"task_id": task.id}
 
 
+# 终止任务
+class TerminateTaskRequest(BaseModel):
+    task_id: str = Field(..., min_length=1, description="任务ID，必填")
+
+
 @router.post("/terminate")
-async def terminate_task(task_id: str = Body(..., embed=True)):
+async def terminate_task(terminateTaskRequest: TerminateTaskRequest):
     """Terminate a task immediately.
 
     Args:
         task_id: The ID of the task to terminate
     """
+    task_id = terminateTaskRequest.task_id
     if task_id not in task_manager.tasks:
         return {"message": f"Task {task_id} not found"}
 

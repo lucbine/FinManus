@@ -41,3 +41,5 @@ huggingface-hub~=0.29.2
 setuptools~=75.8.0
 
 python-multipart~=0.0.20
+
+nanoid==2.0.0

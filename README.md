@@ -4,9 +4,9 @@
 
 中文 | [English](README-en.md)
 
-# 🎉 iHeyTang OpenManus
+# 🎉 iHeyTang FinManus
 
-Manus 非常棒，但 OpenManus 无需邀请码即可实现任何创意 🛫！
+Manus 非常棒，但 FinManus 无需邀请码即可实现任何创意 🛫！
 
 (**特别是当他它有了非常出色的前端交互体验，简直太棒了！**)
 
@@ -56,7 +56,7 @@ cd OpenManus
 3. 创建并激活虚拟环境：
 
 ```bash
-uv venv --python 3.12
+pyenv install 3.12.9
 source .venv/bin/activate  # Unix/macOS 系统
 # Windows 系统使用：
 # .venv\Scripts\activate
@@ -66,16 +66,14 @@ source .venv/bin/activate  # Unix/macOS 系统
 #    source $HOME/.local/bin/env (sh, bash, zsh)
 #    source $HOME/.local/bin/env.fish (fish)
 
-# 验证 uv 安装成功
-uv --version
-# 输出以下版本号则表示安装成功
-# uv 0.6.14 (a4cec56dc 2025-04-09)
+# 切换python 版本
+pyenv shell 3.12.9
 ```
 
 4. 安装依赖：
 
 ````bash
-uv pip install -r requirements.txt
+pip install -r requirements.txt
 
 ### 安装浏览器自动化工具 playwright
 ```bash

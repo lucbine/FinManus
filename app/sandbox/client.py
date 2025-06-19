@@ -9,7 +9,7 @@ from app.sandbox.core.exceptions import SandboxNotFoundError
 from app.sandbox.core.manager import SandboxManager as CoreSandboxManager
 from app.sandbox.core.sandbox import DockerSandbox
 
-
+# 沙盒客户端基类
 class BaseSandboxClient(ABC):
     """Base sandbox client interface."""
 
@@ -46,6 +46,7 @@ class BaseSandboxClient(ABC):
         """Cleans up resources."""
 
 
+# 本地沙盒客户端
 class LocalSandboxClient(BaseSandboxClient):
     """Local sandbox client implementation."""
 
@@ -152,12 +153,14 @@ class LocalSandboxClient(BaseSandboxClient):
             self.sandbox = None
 
 
+# 沙盒管理器
 class SandBoxManager(CoreSandboxManager):
     """Sandbox manager"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    # 创建沙盒
     async def create_sandbox(
         self,
         sandbox_id: str,

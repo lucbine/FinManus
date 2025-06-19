@@ -7,6 +7,7 @@ from app.llm import LLM
 from app.sandbox.core.sandbox import DockerSandbox
 
 
+# 基础工具类
 class BaseTool(ABC, BaseModel):
     name: str
     description: str
@@ -37,6 +38,7 @@ class BaseTool(ABC, BaseModel):
         }
 
 
+# 工具结果类
 class ToolResult(BaseModel):
     """Represents the result of a tool execution."""
 
@@ -77,9 +79,10 @@ class ToolResult(BaseModel):
         return type(self)(**{**self.dict(), **kwargs})
 
 
+# 命令行结果类
 class CLIResult(ToolResult):
     """A ToolResult that can be rendered as a CLI output."""
 
-
+# 工具失败类
 class ToolFailure(ToolResult):
     """A ToolResult that represents a failure."""

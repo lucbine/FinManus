@@ -162,7 +162,9 @@ class EventQueue:
 
 
 class BaseAgent(BaseModel, ABC):
-    """Abstract base class for managing agent state and execution.
+    """
+    提供了智能体的基础框架，包括状态管理、内存管理和执行循环控制。通过`state_context`上下文管理器实现了安全的状态转换，使用`Memory`类管理对话历史。
+    Abstract base class for managing agent state and execution.
 
     Provides foundational functionality for state transitions, memory management,
     and a step-based execution loop. Subclasses must implement the `step` method.
@@ -267,6 +269,7 @@ class BaseAgent(BaseModel, ABC):
                 {"old_state": self.state.value, "new_state": previous_state.value},
             )
 
+    # 更新记忆
     async def update_memory(
         self,
         role: ROLE_TYPE,  # type: ignore
@@ -285,16 +288,19 @@ class BaseAgent(BaseModel, ABC):
         Raises:
             ValueError: If the role is unsupported.
         """
+        # 消息映射
         message_map = {
-            "user": Message.user_message,
-            "system": Message.system_message,
-            "assistant": Message.assistant_message,
-            "tool": lambda content, **kw: Message.tool_message(content, **kw),
+            "user": Message.user_message,  # 用户消息
+            "system": Message.system_message,  # 系统消息
+            "assistant": Message.assistant_message,  # 助手消息
+            "tool": lambda content, **kw: Message.tool_message(
+                content, **kw
+            ),  # 工具消息
         }
 
         if role not in message_map:
             raise ValueError(f"Unsupported message role: {role}")
-
+        # 创建消息
         # Create message with appropriate parameters based on role
         if role == "assistant":
             kwargs = {"base64_image": base64_image}
@@ -307,6 +313,7 @@ class BaseAgent(BaseModel, ABC):
             BaseAgentEvents.MEMORY_ADDED, {"role": role, "message": message.to_dict()}
         )
 
+    # 准备任务 创建沙盒
     async def prepare(self) -> None:
         """Prepare the agent for execution."""
         if not isinstance(self.sandbox, DockerSandbox):
@@ -321,37 +328,47 @@ class BaseAgent(BaseModel, ABC):
             )
             self.sandbox = await SANDBOX_MANAGER.get_sandbox(sandbox_id)
 
+    # 计划
     async def plan(self) -> str:
         """Plan the agent's actions for the given request."""
         return ""
 
+    # 运行
     async def run(self, request: Optional[str] = None) -> str:
         """Execute the agent's main loop asynchronously.
 
         Args:
-            request: Optional initial user request to process.
+            request: Optional initial user request to process. 初始用户请求
 
         Returns:
-            A string summarizing the execution results.
+            A string summarizing the execution results. 执行结果的总结
 
         Raises:
             RuntimeError: If the agent is not in IDLE state at start.
         """
+
+        # 如果任务状态不是 IDLE，则抛出异常
         if self.state != AgentState.IDLE:
             raise RuntimeError(f"Cannot run agent from state: {self.state}")
 
+        # 触发开始事件
         self.emit(BaseAgentEvents.LIFECYCLE_START, {"request": request})
 
         results: List[str] = []
+        # 触发准备事件
         self.emit(BaseAgentEvents.LIFECYCLE_PREPARE_START, {})
         await self.prepare()
+        # 触发准备完成事件
         self.emit(BaseAgentEvents.LIFECYCLE_PREPARE_COMPLETE, {})
         async with self.state_context(AgentState.RUNNING):
+            # 触发计划开始事件
+            self.emit(BaseAgentEvents.LIFECYCLE_PLAN_START, {})
             if request:
                 await self.update_memory("user", request)
                 if self.should_plan:
                     await self.plan()
 
+            # 循环迭代：将结果反馈给LLM，继续思考和行动，直到任务完成。
             while (
                 self.current_step < self.max_steps and self.state != AgentState.FINISHED
             ):
@@ -400,6 +417,7 @@ class BaseAgent(BaseModel, ABC):
             )
         return "\n".join(results) if results else "No steps executed"
 
+    # 事件包装器
     def event_wrapper(
         before_event: str, after_event: str, error_event: Optional[str] = None
     ):
@@ -474,7 +492,7 @@ class BaseAgent(BaseModel, ABC):
 
         return decorator
 
-    @abstractmethod
+    @abstractmethod  # @abstractmethod 修饰的方法没有具体实现，只定义方法名和参数，表示所有子类必须实现该方法。
     async def step(self) -> str:
         """Execute a single step in the agent's workflow.
 
@@ -486,6 +504,7 @@ class BaseAgent(BaseModel, ABC):
         - step:error: On step execution error
         """
 
+    # 处理卡住状态
     def handle_stuck_state(self):
         """Handle stuck state by adding a prompt to change strategy"""
         stuck_prompt = "\
@@ -497,6 +516,7 @@ class BaseAgent(BaseModel, ABC):
             BaseAgentEvents.STATE_STUCK_HANDLED, {"new_prompt": self.next_step_prompt}
         )
 
+    # 检查是否卡住
     def is_stuck(self) -> bool:
         """Check if the agent is stuck in a loop by detecting duplicate content"""
         if len(self.memory.messages) < 2:
@@ -525,6 +545,7 @@ class BaseAgent(BaseModel, ABC):
         """Set the list of messages in the agent's memory."""
         self.memory.messages = value
 
+    # 注册事件
     def on(self, event_pattern: str, handler: EventHandler) -> None:
         """Register an event handler for events matching the specified pattern.
 
@@ -552,6 +573,7 @@ class BaseAgent(BaseModel, ABC):
             raise ValueError("Event handler must be a callable")
         self._private_event_queue.add_handler(event_pattern, handler)
 
+    # 触发事件
     def emit(self, event_name: str, data: Dict[str, Any]) -> None:
         """Emit an event and add it to the processing queue.
 
@@ -576,20 +598,27 @@ class BaseAgent(BaseModel, ABC):
         """
         if not self.enable_event_queue:
             return
+
+        # 创建事件
         event = EventItem(
             name=event_name,
             kwargs=data,
             step=self.current_step,
             timestamp=datetime.now(),
         )
+        logger.debug(f"Emitting event: {event}")
+        logger.debug(f"Event queue: {self._private_event_queue}")
+        # 添加事件到队列
         self._private_event_queue.put(event)
 
+    # 终止
     async def terminate(self):
         """Request to terminate the current task."""
         logger.info(f"Terminating task {self.task_id}")
         self.should_terminate = True
         self.emit(BaseAgentEvents.LIFECYCLE_TERMINATING, {})
 
+    # 清理
     async def cleanup(self):
         """Clean up the agent's resources."""
         if self.sandbox:

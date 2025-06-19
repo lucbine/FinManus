@@ -41,6 +41,8 @@ type CreateTaskArgs = {
   files: File[];
   shouldPlan: boolean;
 };
+
+// 创建任务
 export const createTask = withUserAuth(async ({ organization, args }: AuthWrapperContext<CreateTaskArgs>) => {
   const { modelId, prompt, tools, files, shouldPlan } = args;
   const llmConfig = await prisma.llmConfigs.findUnique({ where: { id: modelId, organizationId: organization.id } });
@@ -99,7 +101,7 @@ export const createTask = withUserAuth(async ({ organization, args }: AuthWrappe
   });
   console.log(processedTools);
 
-  // Create task
+  // 创建任务
   const task = await prisma.tasks.create({
     data: {
       prompt,
@@ -110,15 +112,14 @@ export const createTask = withUserAuth(async ({ organization, args }: AuthWrappe
     },
   });
 
-  const formData = new FormData();
-  formData.append('task_id', `${organization.id}/${task.id}`);
-  formData.append('prompt', prompt);
-  formData.append('should_plan', shouldPlan.toString());
-  processedTools.forEach(tool => formData.append('tools', tool));
-  formData.append('preferences', JSON.stringify({ language: LANGUAGE_CODES[preferences?.language as keyof typeof LANGUAGE_CODES] }));
-  formData.append(
-    'llm_config',
-    JSON.stringify({
+  // 发送任务到 Manus 服务
+  const taskRequest = {
+    prompt,
+    task_id: `${organization.id}/${task.id}`,
+    should_plan: shouldPlan,
+    tools: processedTools,
+    preferences: { language: LANGUAGE_CODES[preferences?.language as keyof typeof LANGUAGE_CODES] },
+    llm_config: {
       model: llmConfig.model,
       base_url: llmConfig.baseUrl,
       api_key: decryptWithPrivateKey(llmConfig.apiKey, privateKey),
@@ -127,14 +128,17 @@ export const createTask = withUserAuth(async ({ organization, args }: AuthWrappe
       temperature: llmConfig.temperature,
       api_type: llmConfig.apiType || '',
       api_version: llmConfig.apiVersion || '',
-    }),
-  );
-  files.forEach(file => formData.append('files', file, file.name));
+    },
+    files: files
+  };
 
   const [error, response] = await to(
-    fetch(`${MANUS_URL}/tasks`, {
+    fetch(`${MANUS_URL}/tasks/create`, {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(taskRequest),
     }).then(async res => {
       if (res.status === 200) {
         return (await res.json()) as Promise<{ task_id: string }>;
@@ -245,16 +249,14 @@ export const restartTask = withUserAuth(
       [] as { role: string; message: string }[],
     );
 
-    // Send task to API
-    const formData = new FormData();
-    formData.append('task_id', `${organization.id}/${task.id}`);
-    formData.append('prompt', prompt);
-    formData.append('should_plan', shouldPlan.toString());
-    processedTools.forEach(tool => formData.append('tools', tool));
-    formData.append('preferences', JSON.stringify({ language: LANGUAGE_CODES[preferences?.language as keyof typeof LANGUAGE_CODES] }));
-    formData.append(
-      'llm_config',
-      JSON.stringify({
+    // 发送任务到 Manus 服务
+    const taskRequest = {
+      task_id: `${organization.id}/${task.id}`,
+      prompt,
+      should_plan: shouldPlan,
+      tools: processedTools,
+      preferences: { language: LANGUAGE_CODES[preferences?.language as keyof typeof LANGUAGE_CODES] },
+      llm_config: {
         model: llmConfig.model,
         base_url: llmConfig.baseUrl,
         api_key: decryptWithPrivateKey(llmConfig.apiKey, privateKey),
@@ -263,15 +265,18 @@ export const restartTask = withUserAuth(
         temperature: llmConfig.temperature,
         api_type: llmConfig.apiType || '',
         api_version: llmConfig.apiVersion || '',
-      }),
-    );
-    formData.append('history', JSON.stringify(history));
-    files.forEach(file => formData.append('files', file));
+      },
+      history: history,
+      files: files
+    };
 
     const [error, response] = await to(
       fetch(`${MANUS_URL}/tasks/restart`, {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(taskRequest),
       }).then(res => res.json() as Promise<{ task_id: string }>),
     );
 
@@ -332,18 +337,36 @@ export const getSharedTask = async ({ taskId }: { taskId: string }) => {
 
 // Handle event stream in background
 async function handleTaskEvents(taskId: string, outId: string, organizationId: string) {
-  const streamResponse = await fetch(`${MANUS_URL}/tasks/${outId}/events`);
+
+  console.log('handleTaskEvents', taskId, outId, organizationId);
+
+  // 建立 SSE 连接
+  const streamResponse = await fetch(`${MANUS_URL}/tasks/events`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      task_id: taskId,
+      organization_id: organizationId
+    })
+  });
+
   const reader = streamResponse.body?.getReader();
   if (!reader) throw new Error('Failed to get response stream');
 
+  // 创建解码器
   const decoder = new TextDecoder();
 
+  // 获取任务进度
   const taskProgresses = await prisma.taskProgresses.findMany({ where: { taskId }, orderBy: { index: 'asc' } });
   const rounds = taskProgresses.map(progress => progress.round);
   const round = Math.max(...rounds, 1);
   let messageIndex = taskProgresses.length || 0;
   let buffer = '';
+
   try {
+    // 处理事件流
     while (true) {
       const { done, value } = await reader.read();
 
@@ -364,7 +387,15 @@ async function handleTaskEvents(taskId: string, outId: string, organizationId: s
 
           // Write message to database
           await prisma.taskProgresses.create({
-            data: { taskId, organizationId, index: messageIndex++, step, round, type: event_name, content },
+            data: {
+              taskId,
+              organizationId,
+              index: messageIndex++,
+              step,
+              round,
+              type: event_name,
+              content
+            },
           });
 
           // If complete message, update task status
