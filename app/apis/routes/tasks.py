@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent.base import BaseAgentEvents
-from app.agent.manus import Manus, McpToolConfig
+from app.agent.manus import AgentFactory, Manus, McpToolConfig
 from app.apis.services.task_manager import task_manager
 from app.config import LLMSettings, config
 from app.llm import LLM
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 AGENT_NAME = "Manus"
 
 
-# 处理任务事件
+# 任务事件处理
 async def handle_agent_event(task_id: str, event_name: str, step: int, **kwargs):
     """Handle agent events and update task status.
 
@@ -34,7 +34,7 @@ async def handle_agent_event(task_id: str, event_name: str, step: int, **kwargs)
         logger.warning(f"No task_id provided for event: {event_name}")
         return
 
-    # Update task step
+    # 更新任务进度
     await task_manager.update_task_progress(
         task_id=task_id, event_name=event_name, step=step, **kwargs
     )
@@ -53,7 +53,7 @@ async def run_task(task_id: str, prompt: str):
         task = task_manager.tasks[task_id]
         agent = task.agent
 
-        # 设置事件处理程序，基于所有定义在 Agent 类层次结构中的事件类型
+        # 设置正则表达式，匹配所有事件
         event_patterns = [r"agent:.*"]
 
         # 注册每个事件模式的事件处理程序
@@ -113,6 +113,7 @@ def parse_tools(tools: list[str]) -> list[Union[str, McpToolConfig]]:
 # 请求体结构定义
 class TaskRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="任务提示词，必填")
+    agent_name: Optional[str] = Field(AGENT_NAME, description="智能体名称")
     task_id: Optional[str] = Field(
         None, min_length=1, description="任务ID，格式为 organization_id/task_id"
     )
@@ -143,6 +144,7 @@ async def create_task(taskRequest: TaskRequest):
     preferences = taskRequest.preferences
     llm_config = taskRequest.llm_config
     files = taskRequest.files
+    agent_name = taskRequest.agent_name
 
     # 验证 prompt 不能为空
     if not prompt or not prompt.strip():
@@ -189,21 +191,22 @@ async def create_task(taskRequest: TaskRequest):
     # 解析工具
     processed_tools = parse_tools(tools or [])
 
-    # 创建任务
-    task = task_manager.create_task(
-        task_id,
-        Manus(
-            name=AGENT_NAME,
-            description="A versatile agent that can solve various tasks using multiple tools",
-            should_plan=should_plan,
-            llm=(
-                LLM(config_name=task_id, llm_config=llm_config_obj)
-                if llm_config_obj
-                else None
-            ),
-            enable_event_queue=True,  # Enable event queue
+    # 使用工厂模式创建智能体
+    agent = AgentFactory.create_agent(
+        agent_name=agent_name or AGENT_NAME,
+        name=agent_name,
+        description="A versatile agent that can solve various tasks using multiple tools",
+        should_plan=should_plan,
+        llm=(
+            LLM(config_name=task_id, llm_config=llm_config_obj)
+            if llm_config_obj
+            else None
         ),
+        enable_event_queue=True,  # Enable event queue
     )
+
+    # 创建任务
+    task = task_manager.create_task(task_id, agent)
 
     # 初始化任务
     task.agent.initialize(
@@ -289,6 +292,7 @@ async def task_events(eventRequest: EventRequest):
         },
     )
 
+
 # 事件生成器，用于生成事件流
 async def event_generator(task_id: str):
 
@@ -301,9 +305,11 @@ async def event_generator(task_id: str):
 
     while True:
         try:
+            # 超时控制
             event = await asyncio.wait_for(queue.get(), timeout=10)
             formatted_event = dumps(event)
 
+            # 如果事件没有类型，则返回心跳
             if not event.get("type"):
                 yield ":heartbeat\n\n"
                 continue
@@ -312,19 +318,20 @@ async def event_generator(task_id: str):
             # Send actual event data（发送实际事件数据）
             yield f"data: {formatted_event}\n\n"
 
+            # 如果事件类型为生命周期完成，则结束事件流
             if event.get("event_name") == BaseAgentEvents.LIFECYCLE_COMPLETE:
                 break
         except asyncio.TimeoutError:
-            # 心跳
+            # 超时返回心跳
             yield ":heartbeat\n\n"
             continue
         except asyncio.CancelledError:
             # 客户端断开连接
-            logger.info(f"Client disconnected for task {task_id}")
+            logger.warning(f"Client disconnected for task {task_id}")
             break
         except Exception as e:
             # 错误
-            logger.error(f"Error in event stream: {str(e)}")
+            logger.exception(f"Error in event stream: {str(e)}")
             yield f"event: error\ndata: {dumps({'message': str(e)})}\n\n"
             break
     # 移除任务
@@ -502,3 +509,15 @@ async def terminate_task(terminateTaskRequest: TerminateTaskRequest):
     await task.agent.terminate()
 
     return {"message": f"Task {task_id} terminated successfully", "task_id": task_id}
+
+
+# 获取可用的智能体类型
+@router.get("/agents")
+async def get_available_agents_list():
+    """获取所有可用的智能体类型"""
+    agents = ["Manus", "StockManus"]
+    return {
+        "agents": agents,
+        "count": len(agents),
+        "description": "Available agent types for task creation",
+    }

@@ -32,28 +32,40 @@ class ToolCallAgentEvents(BaseAgentEvents):
     TOOL_EXECUTE_COMPLETE = f"{TOOL_CALL_ACT_AGENT_EVENTS_PREFIX}:execute:complete"
 
 
+# 工具调用上下文助手
 class ToolCallContextHelper:
+
+    # 可用工具
     available_tools: ToolCollection = ToolCollection(
-        CreateChatCompletion(), Terminate()
+        CreateChatCompletion(), Terminate()  # 创建聊天完成 、 终止工具
     )
 
+    # MCP工具调用主机
     mcp: MCPToolCallHost = None
 
+    # 工具选择模式
     tool_choices: TOOL_CHOICE_TYPE = ToolChoice.AUTO  # type: ignore
+
+    # 特殊工具名称
     special_tool_names: List[str] = [Terminate().name]
 
+    # 工具调用
     tool_calls: List[ToolCall] = []
 
+    # 最大观察
     max_observe: int = 10000
 
+    # 初始化
     def __init__(self, agent: "BaseAgent"):
         self.agent = agent
         self.mcp = MCPToolCallHost(agent.task_id, agent.sandbox)
 
+    # 添加工具
     async def add_tool(self, tool: BaseTool) -> None:
         """Add a new tool to the available tools collection."""
         self.available_tools.add_tool(tool)
 
+    # 添加MCP工具
     async def add_mcp(self, tool: dict) -> None:
         """Add a new MCP client to the available tools collection."""
         if (
@@ -81,6 +93,7 @@ class ToolCallContextHelper:
                 for mcp_tool in client.tool_map.values():
                     self.available_tools.add_tool(mcp_tool)
 
+    # 询问工具
     async def ask_tool(self) -> bool:
         """Process current state and decide next actions using tools"""
         if self.agent.next_step_prompt:
@@ -190,6 +203,7 @@ class ToolCallContextHelper:
             )
             return False
 
+    # 执行工具
     async def execute_tool(self) -> str:
         """Execute tool calls and handle their results"""
         self.agent.emit(
@@ -232,6 +246,7 @@ class ToolCallContextHelper:
         self.agent.emit(ToolCallAgentEvents.TOOL_COMPLETE, {"results": results})
         return results
 
+    # 执行工具命令
     async def execute_tool_command(self, command: ToolCall) -> str:
         """Execute a single tool call with robust error handling"""
         if not command or not command.function or not command.function.name:
@@ -306,6 +321,7 @@ class ToolCallContextHelper:
             )
             return f"Error: {error_msg}"
 
+    # 处理特殊工具
     async def handle_special_tool(self, name: str, result: Any, **kwargs):
         """Handle special tool execution and state changes"""
         if not self._is_special_tool(name):
@@ -316,15 +332,18 @@ class ToolCallContextHelper:
             logger.info(f"🏁 Special tool '{name}' has completed the task!")
             self.agent.state = AgentState.FINISHED
 
+    # 确定是否应该完成执行
     @staticmethod
     def _should_finish_execution(**kwargs) -> bool:
         """Determine if tool execution should finish the agent"""
         return True
 
+    # 确定是否是特殊工具
     def _is_special_tool(self, name: str) -> bool:
         """Check if tool name is in special tools list"""
         return name.lower() in [n.lower() for n in self.special_tool_names]
 
+    # 清理工具
     async def cleanup_tools(self):
         """Clean up resources used by the agent's tools."""
         for tool_name, tool_instance in self.available_tools.tool_map.items():

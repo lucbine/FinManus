@@ -32,10 +32,10 @@ TOOL_CHOICE_TYPE = Literal[TOOL_CHOICE_VALUES]  # type: ignore
 class AgentState(str, Enum):
     """Agent execution states"""
 
-    IDLE = "IDLE"
-    RUNNING = "RUNNING"
-    FINISHED = "FINISHED"
-    ERROR = "ERROR"
+    IDLE = "IDLE"  # 空闲
+    RUNNING = "RUNNING"  # 运行中
+    FINISHED = "FINISHED"  # 完成
+    ERROR = "ERROR"  # 错误
 
 
 class Function(BaseModel):

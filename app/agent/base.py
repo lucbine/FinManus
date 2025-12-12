@@ -5,18 +5,8 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import wraps
-from typing import (
-    Any,
-    Callable,
-    Coroutine,
-    Dict,
-    List,
-    NamedTuple,
-    Optional,
-    ParamSpec,
-    Pattern,
-    TypeVar,
-)
+from typing import (Any, Callable, Coroutine, Dict, List, NamedTuple, Optional,
+                    ParamSpec, Pattern, TypeVar)
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
@@ -35,10 +25,10 @@ R = TypeVar("R")
 
 
 class EventItem(NamedTuple):
-    name: str
-    kwargs: dict
-    step: int
-    timestamp: datetime
+    name: str  # 事件名称
+    kwargs: dict  # 事件参数
+    step: int  # 步骤
+    timestamp: datetime  # 时间戳
 
 
 class EventPattern:
@@ -54,37 +44,41 @@ BASE_AGENT_EVENTS_PREFIX = "agent:lifecycle"
 
 class BaseAgentEvents:
     # Lifecycle events
-    LIFECYCLE_START = f"{BASE_AGENT_EVENTS_PREFIX}:start"
-    LIFECYCLE_PREPARE_START = f"{BASE_AGENT_EVENTS_PREFIX}:prepare:start"
-    LIFECYCLE_PREPARE_COMPLETE = f"{BASE_AGENT_EVENTS_PREFIX}:prepare:complete"
-    LIFECYCLE_PLAN_START = f"{BASE_AGENT_EVENTS_PREFIX}:plan:start"
-    LIFECYCLE_PLAN_COMPLETE = f"{BASE_AGENT_EVENTS_PREFIX}:plan:complete"
-    LIFECYCLE_COMPLETE = f"{BASE_AGENT_EVENTS_PREFIX}:complete"
-    LIFECYCLE_TERMINATING = f"{BASE_AGENT_EVENTS_PREFIX}:terminating"
-    LIFECYCLE_TERMINATED = f"{BASE_AGENT_EVENTS_PREFIX}:terminated"
+    LIFECYCLE_START = f"{BASE_AGENT_EVENTS_PREFIX}:start"  # 生命周期开始
+    LIFECYCLE_PREPARE_START = f"{BASE_AGENT_EVENTS_PREFIX}:prepare:start"  # 准备开始
+    LIFECYCLE_PREPARE_COMPLETE = (
+        f"{BASE_AGENT_EVENTS_PREFIX}:prepare:complete"  # 准备完成
+    )
+    LIFECYCLE_PLAN_START = f"{BASE_AGENT_EVENTS_PREFIX}:plan:start"  # 计划开始
+    LIFECYCLE_PLAN_COMPLETE = f"{BASE_AGENT_EVENTS_PREFIX}:plan:complete"  # 计划完成
+    LIFECYCLE_COMPLETE = f"{BASE_AGENT_EVENTS_PREFIX}:complete"  # 完成
+    LIFECYCLE_TERMINATING = f"{BASE_AGENT_EVENTS_PREFIX}:terminating"  # 终止中
+    LIFECYCLE_TERMINATED = f"{BASE_AGENT_EVENTS_PREFIX}:terminated"  # 终止
     # State events
-    STATE_CHANGE = f"{BASE_AGENT_EVENTS_PREFIX}:state:change"
-    STATE_STUCK_DETECTED = f"{BASE_AGENT_EVENTS_PREFIX}:state:stuck_detected"
-    STATE_STUCK_HANDLED = f"{BASE_AGENT_EVENTS_PREFIX}:state:stuck_handled"
+    STATE_CHANGE = f"{BASE_AGENT_EVENTS_PREFIX}:state:change"  # 状态改变
+    STATE_STUCK_DETECTED = (
+        f"{BASE_AGENT_EVENTS_PREFIX}:state:stuck_detected"  # 卡住检测
+    )
+    STATE_STUCK_HANDLED = f"{BASE_AGENT_EVENTS_PREFIX}:state:stuck_handled"  # 卡住处理
     # Step events
-    STEP_MAX_REACHED = f"{BASE_AGENT_EVENTS_PREFIX}:step_max_reached"
+    STEP_MAX_REACHED = f"{BASE_AGENT_EVENTS_PREFIX}:step_max_reached"  # 最大步骤达到
     # Memory events
-    MEMORY_ADDED = f"{BASE_AGENT_EVENTS_PREFIX}:memory:added"
+    MEMORY_ADDED = f"{BASE_AGENT_EVENTS_PREFIX}:memory:added"  # 记忆添加
 
 
 class EventQueue:
     def __init__(self):
+        # 事件队列 用于事件流 deque（双端队列）是 Python 标准库 collections 中的一个高性能双端队列实现
         self.queue: deque[EventItem] = deque()
-        self._processing = False
-        self._lock = asyncio.Lock()
-        self._event = asyncio.Event()
-        self._task: Optional[asyncio.Task] = None
-        self._handlers: List[EventPattern] = []
+        self._processing = False  # 是否正在处理事件
+        self._lock = asyncio.Lock()  # 协程锁
+        self._event = asyncio.Event()  # 协程事件通知 用于通知事件处理循环的异步事件对象
+        self._task: Optional[asyncio.Task] = None  # 当前正在处理事件的异步任务
+        self._handlers: List[EventPattern] = []  # 事件处理程序列表
 
     def put(self, event: EventItem) -> None:
-        self.queue.append(event)
-        self._event.set()
-        pass
+        self.queue.append(event)  # 添加事件到队列
+        self._event.set() # 唤醒所有等待者
 
     def add_handler(self, event_pattern: str, handler: EventHandler) -> None:
         """Add an event handler with regex pattern support.
@@ -97,6 +91,7 @@ class EventQueue:
             raise ValueError("Event handler must be a callable")
         self._handlers.append(EventPattern(event_pattern, handler))
 
+    # 处理事件
     async def process_events(self) -> None:
         logger.info("Event processing loop started")
         while True:
@@ -105,12 +100,12 @@ class EventQueue:
                 await self._event.wait()
                 logger.debug("Event received, processing...")
 
-                async with self._lock:
+                async with self._lock: # 获取锁
                     while self.queue:
-                        event = self.queue.popleft()
+                        event = self.queue.popleft() # 从队列中取出事件
                         logger.debug(f"Processing event: {event.name}")
 
-                        if not self._handlers:
+                        if not self._handlers: # 如果没有事件处理程序
                             logger.warning("No event handlers registered")
                             continue
 
@@ -127,7 +122,7 @@ class EventQueue:
                                     logger.debug(
                                         f"Calling handler for {event.name} with kwargs: {kwargs}"
                                     )
-                                    await pattern.handler(**kwargs)
+                                    await pattern.handler(**kwargs) # 调用事件处理程序
                                 except Exception as e:
                                     logger.error(
                                         f"Error in event handler for {event.name}: {str(e)}"
@@ -170,47 +165,64 @@ class BaseAgent(BaseModel, ABC):
     and a step-based execution loop. Subclasses must implement the `step` method.
     """
 
-    enable_event_queue: bool = Field(default=True, description="Enable event queue")
+    enable_event_queue: bool = Field(
+        default=True, description="Enable event queue"
+    )  # 是否启用事件队列
+    # 私有事件队列 用于事件流（当你想在 Pydantic 模型中保留一些内部使用的状态或缓存变量，但不希望这些属性作为公共字段暴露出来时，就可以使用 PrivateAttr）
     _private_event_queue: EventQueue = PrivateAttr(default_factory=EventQueue)
 
     # Core attributes
-    name: str = Field(..., description="Unique name of the agent")
-    description: Optional[str] = Field(None, description="Optional agent description")
+    name: str = Field(..., description="Unique name of the agent")  # 智能体名称
+    description: Optional[str] = Field(
+        None, description="Optional agent description"
+    )  # 智能体描述
 
     should_plan: bool = Field(
         default=True, description="Whether the agent should plan before steps"
-    )
+    )  # 是否在每一步之前进行规划
 
     # Prompts
     system_prompt: Optional[str] = Field(
         None, description="System-level instruction prompt"
     )
+
+    # 下一步提示词
     next_step_prompt: Optional[str] = Field(
         None, description="Prompt for determining next action"
     )
 
+    # 任务ID
     task_id: Optional[str] = Field(None, description="Task ID for the agent")
 
-    # Dependencies
+    # llm语言模型
     llm: LLM = Field(default_factory=LLM, description="Language model instance")
+
+    # 记忆
     memory: Memory = Field(default_factory=Memory, description="Agent's memory store")
+
+    # 状态
     state: AgentState = Field(
         default=AgentState.IDLE, description="Current agent state"
     )
 
+    # 沙盒
     sandbox: Optional[DockerSandbox] = Field(None, description="Sandbox instance")
 
+    # 是否终止
     should_terminate: bool = Field(default=False, description="Terminate the agent")
 
-    # Execution control
+    # 最大步骤
     max_steps: int = Field(default=10, description="Maximum steps before termination")
+
+    # 当前步骤
     current_step: int = Field(default=0, description="Current step in execution")
 
+    # 重复阈值
     duplicate_threshold: int = 2
 
     class Config:
-        arbitrary_types_allowed = True
-        extra = "allow"  # Allow extra fields for flexibility in subclasses
+        arbitrary_types_allowed = True  # 允许任意类型
+        extra = "allow"  # 允许额外的字段
 
     @model_validator(mode="after")
     def initialize_agent(self) -> "BaseAgent":
@@ -231,6 +243,7 @@ class BaseAgent(BaseModel, ABC):
         if hasattr(self, "_private_event_queue"):
             self._private_event_queue.stop()
 
+    # @asynccontextmanager 是 Python 中用于定义异步上下文管理器的装饰器，来自标准库模块 contextlib，它让你可以使用 async with 管理异步资源（如数据库连接、异步锁、网络连接等）的获取和释放
     @asynccontextmanager
     async def state_context(self, new_state: AgentState):
         """Context manager for safe agent state transitions.
@@ -338,7 +351,7 @@ class BaseAgent(BaseModel, ABC):
         """Execute the agent's main loop asynchronously.
 
         Args:
-            request: Optional initial user request to process. 初始用户请求
+            request: Optional initial user request to process. 初始用户请求 prompt
 
         Returns:
             A string summarizing the execution results. 执行结果的总结
@@ -360,6 +373,8 @@ class BaseAgent(BaseModel, ABC):
         await self.prepare()
         # 触发准备完成事件
         self.emit(BaseAgentEvents.LIFECYCLE_PREPARE_COMPLETE, {})
+
+
         async with self.state_context(AgentState.RUNNING):
             # 触发计划开始事件
             self.emit(BaseAgentEvents.LIFECYCLE_PLAN_START, {})
@@ -547,55 +562,57 @@ class BaseAgent(BaseModel, ABC):
 
     # 注册事件
     def on(self, event_pattern: str, handler: EventHandler) -> None:
-        """Register an event handler for events matching the specified pattern.
+        """为匹配指定模式的事件注册事件处理函数。
 
-        Args:
-            event_pattern: Regex pattern to match event names
-            handler: The async function to be called when matching events occur.
-                    The handler must accept event_name as its first parameter.
+        参数:
+            event_pattern: 用于匹配事件名称的正则表达式模式
+            handler: 当匹配到事件时要调用的异步函数。
+                     该处理函数必须以 event_name 作为第一个参数。
 
-        Example:
+        示例:
             ```python
-            # Subscribe to all lifecycle events
+            # 订阅所有生命周期相关的事件
             async def on_lifecycle(event_name: str, **data):
-                print(f"Lifecycle event {event_name} occurred with data: {data}")
+                print(f"生命周期事件 {event_name} 发生，附带数据: {data}")
 
             agent.on("agent:lifecycle:.*", on_lifecycle)
 
-            # Subscribe to specific state changes
+            # 订阅特定的状态变化事件
             async def on_state_change(event_name: str, old_state: AgentState, new_state: AgentState):
-                print(f"State changed from {old_state} to {new_state}")
+                print(f"状态从 {old_state} 变更为 {new_state}")
 
             agent.on("agent:state:change", on_state_change)
             ```
         """
+
         if not callable(handler):
             raise ValueError("Event handler must be a callable")
         self._private_event_queue.add_handler(event_pattern, handler)
 
     # 触发事件
     def emit(self, event_name: str, data: Dict[str, Any]) -> None:
-        """Emit an event and add it to the processing queue.
+        """触发一个事件，并将其加入处理队列。
 
-        Args:
-            event_name: The name of the event to emit
-            data: Event data dictionary
+        参数:
+            event_name: 要触发的事件名称
+            data: 事件附带的数据字典
 
-        Example:
+        示例:
             ```python
-            # Simple event emission
+            # 触发一个简单的事件
             agent.emit("agent:state:change", {
                 "old_state": old_state.value,
                 "new_state": new_state.value
             })
 
-            # Subscribe to events with regex pattern
+            # 使用正则表达式模式订阅事件
             async def on_state_events(event_name: str, old_state: AgentState, new_state: AgentState):
-                print(f"Event {event_name}: State changed from {old_state} to {new_state}")
+                print(f"事件 {event_name}: 状态从 {old_state} 变更为 {new_state}")
 
             agent.on("agent:state:.*", on_state_events)
             ```
         """
+
         if not self.enable_event_queue:
             return
 

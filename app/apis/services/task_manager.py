@@ -3,17 +3,18 @@ import uuid
 from datetime import datetime
 from typing import Dict
 
-from app.agent.manus import Manus
+from app.agent.react import ReActAgent
 from app.apis.models.task import Task
+
 
 # 任务管理器
 class TaskManager:
     def __init__(self):
-        self.tasks: Dict[str, Task] = {}    # 任务列表
-        self.queues: Dict[str, asyncio.Queue] = {}  # 任务队列
+        self.tasks: Dict[str, Task] = {}  # 任务列表
+        self.queues: Dict[str, asyncio.Queue] = {}  # 任务队列 用于事件流
 
     # 创建任务
-    def create_task(self, task_id: str, agent: Manus) -> Task:
+    def create_task(self, task_id: str, agent: ReActAgent) -> Task:
         task = Task(
             id=task_id,
             created_at=datetime.now(),
@@ -29,7 +30,7 @@ class TaskManager:
     ):
         if task_id in self.tasks:
             task = self.tasks[task_id]
-            # Use the same step value for both progress and message
+            # 将事件推送到任务队列 用于事件流 （包含事件名称，进度，内容）
             await self.queues[task_id].put(
                 {
                     "type": "progress",
